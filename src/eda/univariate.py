@@ -7,8 +7,10 @@ Cách dùng nhanh (trong notebook):
 
     ua = UnivariateAnalyzer(df, cols=continuous_cols)   # cols = list 50 cột liên tục/đếm
     ua.summary()                                        # bảng tổng quan 1 dòng / cột
-    ua.report(["domain_age", "length_url"])             # in báo cáo dạng danh sách
-    ua.plot(["domain_age", "length_url"])               # Hist+KDE+Boxplot
+    ua.show(["domain_age", "length_url"], ncols=2)      # báo cáo dạng thẻ xếp NGANG
+    ua.report(["domain_age", "length_url"])             # BẢNG NGANG: dòng = cột dữ liệu
+    ua.report(["domain_age"], layout="list")            # dạng danh sách dọc (cũ)
+    ua.plot(["domain_age", "length_url"], ncols=4)      # Hist+KDE+Boxplot, xếp ngang
     ua.export_txt("reports/univariate_report.txt")      # xuất txt (mặc định: tất cả cột)
 """
 from __future__ import annotations
@@ -216,12 +218,68 @@ class UnivariateAnalyzer:
         ]
         return "\n".join(lines)
 
-    def report(self, cols: Iterable[str] | None = None, print_out: bool = True) -> str:
+    def table(self, cols: Iterable[str] | None = None, precision: int = 3) -> pd.DataFrame:
+        """
+        Bảng NGANG: mỗi DÒNG = 1 cột dữ liệu, mỗi CỘT = 1 chỉ số,
+        gom theo nhóm Validity / Descriptive / Distribution / Outlier.
+        """
         cols = list(cols) if cols is not None else self.cols
-        text = "\n\n".join(self.column_report(c) for c in cols)
+        rows = {}
+        for c in cols:
+            s = self._stats(c)
+            rows[c] = {
+                ("Validity", "+inf"): s["n_posinf"],
+                ("Validity", "-inf"): s["n_neginf"],
+                ("Validity", "NaN"): s["n_nan"],
+                ("Validity", "n_neg"): s["n_neg"],
+                ("Validity", "%neg"): s["pct_neg"],
+                ("Descriptive", "count"): s["count"],
+                ("Descriptive", "mean"): s["mean"],
+                ("Descriptive", "std"): s["std"],
+                ("Descriptive", "min"): s["min"],
+                ("Descriptive", "Q1"): s["q1"],
+                ("Descriptive", "median"): s["median"],
+                ("Descriptive", "Q3"): s["q3"],
+                ("Descriptive", "max"): s["max"],
+                ("Descriptive", "nunique"): s["nunique"],
+                ("Descriptive", "%zero"): s["pct_zero"],
+                ("Distribution", "skew"): s["skew"],
+                ("Distribution", "kurt"): s["kurt"],
+                ("Distribution", "shape"): skew_label(s["skew"]),
+                ("Outlier", "n_out"): s["n_out"],
+                ("Outlier", "%out"): s["pct_out"],
+                ("Flags", "flags"): ", ".join(s["flags"]),
+            }
+        df = pd.DataFrame.from_dict(rows, orient="index")
+        df.columns = pd.MultiIndex.from_tuples(df.columns)
+        df.index.name = "feature"
+        num_cols = df.select_dtypes("number").columns
+        df[num_cols] = df[num_cols].round(precision)
+        return df
+
+    def report(self, cols: Iterable[str] | None = None, layout: str = "table",
+               print_out: bool = True):
+        """
+        layout="table": bảng ngang (dòng = cột dữ liệu, cột = chỉ số) -> trả về DataFrame,
+                        tự hiển thị trong notebook nếu print_out=True.
+        layout="list" : dạng danh sách dọc cũ (text) -> trả về str.
+        """
+        cols = list(cols) if cols is not None else self.cols
+        if layout == "list":
+            text = "\n\n".join(self.column_report(c) for c in cols)
+            if print_out:
+                print(text)
+            return text
+        tb = self.table(cols)
         if print_out:
-            print(text)
-        return text
+            try:
+                from IPython.display import display
+                with pd.option_context("display.max_columns", None, "display.width", None,
+                                       "display.max_colwidth", None, "display.max_rows", None):
+                    display(tb)
+            except ImportError:
+                print(tb.to_string())
+        return tb
 
     # ------------------------------------------------------------------ #
     # 3) Biểu đồ: Hist + KDE (trái) và Boxplot (phải), 1 hàng / cột
@@ -229,6 +287,8 @@ class UnivariateAnalyzer:
     def plot(
         self,
         cols: Iterable[str] | None = None,
+        layout: str = "horizontal",
+        ncols: int = 4,
         per_fig: int = 4,
         clip_upper_q: float | None = None,
         save_dir: str | Path | None = None,
@@ -236,22 +296,35 @@ class UnivariateAnalyzer:
         color: str = "#4C72B0",
     ):
         """
-        clip_upper_q: vd 0.99 -> chỉ VẼ đến phân vị 99% để thấy rõ thân phân phối
-                      khi đuôi quá dài (chỉ áp dụng cho Hist+KDE; Boxplot và
-                      mọi chỉ số vẫn tính trên dữ liệu đầy đủ).
+        layout      : "horizontal" -> mỗi cột là 1 khung dọc (Hist+KDE trên, Boxplot dưới,
+                      chung trục x), các cột xếp NGANG, `ncols` cột / hàng.
+                      "vertical"   -> bố cục cũ: mỗi cột 1 hàng (Hist trái, Boxplot phải),
+                      `per_fig` cột / hình.
+        clip_upper_q: vd 0.99 -> Hist+KDE chỉ vẽ đến phân vị 99% để thấy rõ thân phân phối
+                      khi đuôi quá dài (Boxplot và mọi chỉ số vẫn tính trên dữ liệu đầy đủ;
+                      lưu ý ở layout ngang hai biểu đồ chung trục x nên Boxplot cũng bị cắt
+                      hiển thị cùng khoảng).
         save_dir    : nếu có, lưu mỗi figure thành PNG.
         """
         cols = list(cols) if cols is not None else self.cols
         if save_dir:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
+        horizontal = layout == "horizontal"
+        step = ncols if horizontal else per_fig
 
         figs = []
-        for i in range(0, len(cols), per_fig):
-            chunk = cols[i : i + per_fig]
-            fig, axes = plt.subplots(
-                len(chunk), 2, figsize=(12, 3 * len(chunk)),
-                gridspec_kw={"width_ratios": [2, 1]}, squeeze=False,
-            )
+        for i in range(0, len(cols), step):
+            chunk = cols[i : i + step]
+            if horizontal:
+                fig, axes = plt.subplots(
+                    2, len(chunk), figsize=(4.2 * len(chunk), 5.2), squeeze=False,
+                    gridspec_kw={"height_ratios": [3, 1]}, sharex="col",
+                )
+            else:
+                fig, axes = plt.subplots(
+                    len(chunk), 2, figsize=(12, 3 * len(chunk)), squeeze=False,
+                    gridspec_kw={"width_ratios": [2, 1]},
+                )
             for r, c in enumerate(chunk):
                 s = self._stats(c)
                 x = self.df[c].astype(float)
@@ -261,9 +334,9 @@ class UnivariateAnalyzer:
                 if clip_upper_q is not None:    # chỉ hist+KDE bị cắt đuôi
                     cap = x.quantile(clip_upper_q)
                     x = x[x <= cap]
-                    note = f" (hist ≤ P{int(clip_upper_q * 100)})"
+                    note = f" (≤P{int(clip_upper_q * 100)})"
 
-                ax_h, ax_b = axes[r]
+                ax_h, ax_b = (axes[0, r], axes[1, r]) if horizontal else axes[r]
                 if s["nunique"] <= 1:
                     ax_h.text(0.5, 0.5, f"Hằng số = {self._fmt(s['min'])}",
                               ha="center", va="center", transform=ax_h.transAxes)
@@ -276,17 +349,26 @@ class UnivariateAnalyzer:
                     ax_h.axvline(s["median"], color="green", ls="-", lw=1, label="median")
                     ax_h.legend(fontsize=8)
                     sns.boxplot(x=x_full, ax=ax_b, color=color, fliersize=2)
+                    if horizontal and clip_upper_q is not None:
+                        pad = 0.03 * (x.max() - x.min() or 1)
+                        ax_h.set_xlim(x.min() - pad, x.max() + pad)   # sharex -> áp cho cả boxplot
 
-                ax_h.set_title(
-                    f"{c}{note} | skew={self._fmt(s['skew'])} ({skew_label(s['skew'])})",
-                    fontsize=10, loc="left",
-                )
-                ax_h.set_xlabel("")
-                ax_b.set_title(f"Outlier IQR: {s['n_out']:,} ({s['pct_out']:.1f}%)", fontsize=10)
-                ax_b.set_xlabel("")
+                skew_txt = f"skew={self._fmt(s['skew'])} ({skew_label(s['skew'])})"
+                if horizontal:
+                    ax_h.set_title(f"{c}{note}\n{skew_txt}", fontsize=10)
+                    ax_b.set_title("")
+                    ax_b.set_xlabel(f"Outlier: {s['n_out']:,} ({s['pct_out']:.1f}%)", fontsize=9)
+                    if r > 0:
+                        ax_h.set_ylabel("")
+                else:
+                    ax_h.set_title(f"{c}{note} | {skew_txt}", fontsize=10, loc="left")
+                    ax_b.set_title(f"Outlier IQR: {s['n_out']:,} ({s['pct_out']:.1f}%)", fontsize=10)
+                    ax_b.set_xlabel("")
+                if not horizontal:
+                    ax_h.set_xlabel("")
             fig.tight_layout()
             if save_dir:
-                fig.savefig(Path(save_dir) / f"univariate_{i // per_fig + 1:02d}.png",
+                fig.savefig(Path(save_dir) / f"univariate_{i // step + 1:02d}.png",
                             dpi=130, bbox_inches="tight")
             figs.append(fig)
             if show:
@@ -295,34 +377,19 @@ class UnivariateAnalyzer:
                 plt.close(fig)
         return figs
 
-    # ------------------------------------------------------------------ #
-    # 4) Xuất file txt
-    # ------------------------------------------------------------------ #
-    def export_txt(self, path: str | Path, cols: Iterable[str] | None = None) -> Path:
+    def show(self, cols: Iterable[str] | None = None, ncols: int = 4, font_px: int = 12):
+        """Hiển thị báo cáo dạng danh sách theo các thẻ xếp NGANG trong notebook."""
+        import html
+        from IPython.display import HTML, display
+
         cols = list(cols) if cols is not None else self.cols
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        cards = "".join(
+            f'<div style="flex:1 1 {100 // ncols - 2}%;min-width:240px;border:1px solid #8884;'
+            f'border-radius:6px;padding:6px 10px;margin:4px;">'
+            f'<pre style="margin:0;font-size:{font_px}px;line-height:1.35;white-space:pre-wrap;">'
+            f"{html.escape(self.column_report(c))}</pre></div>"
+            for c in cols
+        )
+        display(HTML(f'<div style="display:flex;flex-wrap:wrap;">{cards}</div>'))
 
-        summ = self.summary(cols)
-        flag_count: dict[str, int] = {}
-        for c in cols:
-            for fl in self._stats(c)["flags"]:
-                flag_count[fl] = flag_count.get(fl, 0) + 1
-
-        head = [
-            "=" * 78,
-            "UNIVARIATE REPORT - CONTINUOUS / COUNT FEATURES",
-            f"Số dòng: {len(self.df):,} | Số cột phân tích: {len(cols)}",
-            "=" * 78,
-            "",
-            "A. TỔNG HỢP CỜ CẢNH BÁO (số cột / cờ)",
-        ]
-        for fl, k in sorted(flag_count.items(), key=lambda t: -t[1]):
-            names = [c for c in cols if fl in self._stats(c)["flags"]]
-            head.append(f"   - {fl}: {k} cột -> {', '.join(names)}")
-        head += ["", "B. BẢNG TỔNG QUAN", summ.to_string(), "", "-" * 78,
-                 "C. CHI TIẾT TỪNG CỘT", "-" * 78, ""]
-
-        body = "\n\n".join(self.column_report(c) for c in cols)
-        path.write_text("\n".join(head) + body + "\n", encoding="utf-8")
-        return path
+    
