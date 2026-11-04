@@ -1,0 +1,13 @@
+# --- Core data ---
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+
+# --- Visualization (seaborn>=0.13: boxplot dùng hue + legend=False) ---
+matplotlib>=3.7
+seaborn>=0.13
+
+# --- Notebook (dùng %load_ext autoreload, display) ---
+notebook>=7.0
+ipykernel>=6.0
+ipython>=8.0
